@@ -1,0 +1,56 @@
+snsoverflow
+Copyright 2026 Christoph Sens
+
+Licensed under the Apache License, Version 2.0.
+
+---
+
+This project is a Kotlin port of
+"amazon-sns-java-extended-client-lib"
+(https://github.com/awslabs/amazon-sns-java-extended-client-lib):
+
+    Copyright 2010-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+    Licensed under the Apache License, Version 2.0.
+
+This is a derivative work under the Apache License, Version 2.0. The message-offload
+control flow, message-attribute validation, and S3 key prefix rules in
+src/main/kotlin/com/christophsens/snsoverflow/SnsExtendedClient.kt, SnsExtendedClientConfig.kt,
+and SnsExtendedClientConstants.kt are ported from the corresponding logic in the original's
+AmazonSNSExtendedClient, AmazonSNSExtendedClientBase, AmazonSNSExtendedClientUtil,
+SNSExtendedClientConstants, and SNSExtendedClientConfiguration, translated from Java to Kotlin.
+The RESERVED_ATTRIBUTE_NAME value and S3 key prefix validation rules are themselves ported from
+amazon-sqs-java-extended-client-lib's SQSExtendedClientConstants
+(https://github.com/awslabs/amazon-sqs-java-extended-client-lib), which the original SNS library
+depends on directly for these constants. See the copyright header in each file for the original
+attribution.
+
+Changes made in this port:
+
+  * The original's separate AmazonSNSExtendedClient (SnsClient) and
+    AmazonSNSExtendedAsyncClient (SnsAsyncClient) are consolidated into a single
+    SnsExtendedClient, since aws-sdk-kotlin's SnsClient is already suspend-based.
+  * The pass-through base class (AmazonSNSExtendedClientBase) is replaced by Kotlin interface
+    delegation (`SnsClient by snsClient`).
+  * payloadoffloading-common (PayloadStore/S3BackedPayloadStore/S3Dao/Util) is replaced by
+    s3overflow (https://github.com/christoph-sens/s3overflow), itself a from-scratch Kotlin
+    reimplementation of payload-offloading-java-common-lib-for-aws.
+  * SNSExtendedClientConfiguration's ObjectCannedACL/ServerSideEncryptionStrategy
+    configuration and the deprecated pre-PayloadStorageConfiguration aliases are dropped.
+    Core behavior — threshold-based offloading, alwaysThroughS3, the JSON message-structure
+    rejection, message-attribute validation — is preserved.
+  * The original's per-message "S3Key" message-attribute override (letting a caller pin the
+    exact S3 key for one publish) is dropped in favor of the config-level s3KeyPrefix already
+    used by sqsoverflow's SqsExtendedClient, for a consistent configuration surface across
+    both ports.
+  * publishBatch offloading is new: the original predates SNS's PublishBatch API and only
+    overrides publish. This port adds the analogous per-entry offload for publishBatch,
+    mirroring the batch handling already present in sqsoverflow's SqsExtendedClient.
+
+The RESERVED_ATTRIBUTE_NAME value ("ExtendedPayloadSize") is kept unchanged from the original
+for interop with SQSExtendedClient implementations subscribed to an SNS topic via a raw-delivery
+SQS subscription. The pointer JSON format produced by this port is not byte-identical to the
+original's (see s3overflow's note on its pointer format); for a fresh build with no existing
+Java consumers, that's the simpler choice.
+
+This notice is included to comply with Section 4 of the Apache License, Version 2.0, under
+which the referenced project is distributed.
