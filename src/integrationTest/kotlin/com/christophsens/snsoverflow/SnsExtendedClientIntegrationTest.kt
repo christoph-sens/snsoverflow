@@ -16,7 +16,7 @@ import aws.sdk.kotlin.services.sqs.model.ReceiveMessageRequest
 import aws.smithy.kotlin.runtime.net.url.Url
 import com.christophsens.s3overflow.PayloadS3Pointer
 import com.christophsens.s3overflow.S3BackedPayloadStore
-import com.christophsens.s3overflow.SQS_SNS_MAX_INLINE_PAYLOAD_SIZE_BYTES
+import com.christophsens.s3overflow.SNS_DEFAULT_MAX_MESSAGE_SIZE_BYTES
 import io.floci.testcontainers.FlociContainer
 import kotlinx.coroutines.test.runTest
 import org.assertj.core.api.Assertions.assertThat
@@ -28,7 +28,7 @@ import java.util.UUID
 
 /**
  * Runs [SnsExtendedClient] against real SNS, SQS, and S3 APIs (via [Floci](https://github.com/floci-io/floci),
- * a free local AWS emulator) to verify the actual 256 KB offload threshold end-to-end: small
+ * a free local AWS emulator) to verify the default 256 KiB offload threshold end-to-end: small
  * messages are published to SNS unchanged, larger ones are written to S3 and only a pointer
  * travels through SNS. A queue subscribed to the topic with raw message delivery stands in for a
  * real subscriber, so the delivered message can be inspected directly. Requires Docker.
@@ -109,7 +109,7 @@ class SnsExtendedClientIntegrationTest {
         }
 
     @Test
-    fun `messages smaller than 256 KB are published to SNS unchanged`() =
+    fun `messages smaller than 256 KiB are published to SNS unchanged`() =
         runTest {
             val smallBody = "x".repeat(1024)
 
@@ -122,9 +122,9 @@ class SnsExtendedClientIntegrationTest {
         }
 
     @Test
-    fun `messages larger than 256 KB are stored in S3 and only a pointer travels through SNS`() =
+    fun `messages larger than 256 KiB are stored in S3 and only a pointer travels through SNS`() =
         runTest {
-            val largeBody = "x".repeat(SQS_SNS_MAX_INLINE_PAYLOAD_SIZE_BYTES + 1024)
+            val largeBody = "x".repeat(SNS_DEFAULT_MAX_MESSAGE_SIZE_BYTES + 1024)
 
             extendedClient.publish(PublishRequest { topicArn = testTopicArn; message = largeBody })
 
