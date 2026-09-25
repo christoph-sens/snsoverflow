@@ -1,12 +1,22 @@
 # snsoverflow
 
+[![Maven Central](https://img.shields.io/maven-central/v/com.christoph-sens/snsoverflow)](https://central.sonatype.com/artifact/com.christoph-sens/snsoverflow)
+[![CI](https://github.com/christoph-sens/snsoverflow/actions/workflows/ci.yml/badge.svg)](https://github.com/christoph-sens/snsoverflow/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 Kotlin port of [amazon-sns-java-extended-client-lib](https://github.com/awslabs/amazon-sns-java-extended-client-lib):
-transparently offloads SNS message bodies that exceed the 256 KB limit to S3, built on
+transparently offloads SNS message bodies that exceed the configured size threshold to S3, built on
 [aws-sdk-kotlin](https://github.com/awslabs/aws-sdk-kotlin) and [s3overflow](https://github.com/christoph-sens/s3overflow)
 (a Kotlin reimplementation of `payload-offloading-java-common-lib-for-aws`, the library the original depends on).
 
 This is a derivative work of the original under the Apache License, Version 2.0 — see
 [NOTICE](NOTICE) for exactly which parts were ported and what was changed.
+
+Part of a family: [s3overflow](https://github.com/christoph-sens/s3overflow) (payload store) · [sqsoverflow](https://github.com/christoph-sens/sqsoverflow) (SQS client) · **snsoverflow** (SNS client).
+
+> **Message size limit:** SNS topics accept 256 KiB by default, which matches the default
+> `payloadSizeThreshold`. If you raise the topic's `MaximumMessageSize` attribute (up to 1 MiB),
+> set `payloadSizeThreshold` to the same value.
 
 ## Why a port
 
@@ -51,6 +61,31 @@ extendedClient.publish(PublishRequest { topicArn = myTopicArn; message = largePa
 `SnsExtendedClient` implements `SnsClient`, so it's a drop-in replacement wherever a plain
 `aws-sdk-kotlin` `SnsClient` is expected.
 
+## Migrating from amazon-sns-java-extended-client-lib
+
+snsoverflow is **not wire-compatible** with the Java library: the S3 pointer format differs.
+Subscribers using the Java SQS extended client or the Java payload-offloading library cannot
+resolve messages published by snsoverflow, and vice versa. Switch publishers and subscribers of a
+topic at the same time.
+
+```java
+// Before (Java, amazon-sns-java-extended-client-lib)
+SNSExtendedClientConfiguration config = new SNSExtendedClientConfiguration()
+    .withPayloadSupportEnabled(s3Client, "my-payload-bucket");
+SnsClient client = new AmazonSNSExtendedClient(SnsClient.builder().build(), config);
+```
+
+```kotlin
+// After (Kotlin, snsoverflow)
+val client = SnsExtendedClient(
+    SnsClient.fromEnvironment(),
+    SnsExtendedClientConfig(payloadStore = S3BackedPayloadStore(s3Client, bucketName = "my-payload-bucket")),
+)
+```
+
+Client-side encryption, canned ACL and the per-message `"S3Key"` override have no equivalent; configure
+SSE-S3/SSE-KMS on the bucket and use `s3KeyPrefix` instead.
+
 ## Build
 
 ```bash
@@ -69,8 +104,6 @@ threshold arrives as only a pointer while the payload lands in S3. Requires Dock
 `./gradlew build`/`check`.
 
 ## Installation
-
-[![Maven Central](https://img.shields.io/maven-central/v/com.christoph-sens/snsoverflow)](https://central.sonatype.com/artifact/com.christoph-sens/snsoverflow)
 
 ```kotlin
 dependencies {

@@ -78,7 +78,7 @@ mavenPublishing {
         name.set("snsoverflow")
         description.set(
             "Kotlin SNS extended client: transparently offloads message payloads that exceed the " +
-                "256 KB SNS limit to S3, based on aws-sdk-kotlin, coroutines, and s3overflow.",
+                "SNS message size limit to S3, based on aws-sdk-kotlin, coroutines, and s3overflow.",
         )
         url.set("https://github.com/christoph-sens/snsoverflow")
         licenses {
