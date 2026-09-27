@@ -4,13 +4,16 @@
 [![CI](https://github.com/christoph-sens/snsoverflow/actions/workflows/ci.yml/badge.svg)](https://github.com/christoph-sens/snsoverflow/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Kotlin port of [amazon-sns-java-extended-client-lib](https://github.com/awslabs/amazon-sns-java-extended-client-lib):
-transparently offloads SNS message bodies that exceed the configured size threshold to S3, built on
-[aws-sdk-kotlin](https://github.com/awslabs/aws-sdk-kotlin) and [s3overflow](https://github.com/christoph-sens/s3overflow)
-(a Kotlin reimplementation of `payload-offloading-java-common-lib-for-aws`, the library the original depends on).
+**An SNS extended client for Kotlin.** `SnsExtendedClient` is an [aws-sdk-kotlin](https://github.com/awslabs/aws-sdk-kotlin)
+`SnsClient` that transparently offloads message bodies above a configurable size threshold to S3 and
+publishes only a small pointer: the claim-check pattern, with coroutines and without the Java SDK.
 
-This is a derivative work of the original under the Apache License, Version 2.0 — see
-[NOTICE](NOTICE) for exactly which parts were ported and what was changed.
+AWS provides this pattern for Java as [amazon-sns-java-extended-client-lib](https://github.com/awslabs/amazon-sns-java-extended-client-lib),
+which wraps the AWS SDK for Java v2 clients and can't be used with aws-sdk-kotlin's clients. snsoverflow
+brings the pattern to aws-sdk-kotlin. It is derived from the Java library under the Apache License,
+Version 2.0 (see [NOTICE](NOTICE) for exactly which parts were taken over and what was changed) and
+built on [s3overflow](https://github.com/christoph-sens/s3overflow), but designed for Kotlin rather than
+translated line by line. It is **not wire-compatible** with the Java library.
 
 Part of a family: [s3overflow](https://github.com/christoph-sens/s3overflow) (payload store) · [sqsoverflow](https://github.com/christoph-sens/sqsoverflow) (SQS client) · **snsoverflow** (SNS client).
 
@@ -20,23 +23,23 @@ Background, migration guide and design notes: [Large SQS and SNS messages in Kot
 > `payloadSizeThreshold` (`SNS_DEFAULT_MAX_MESSAGE_SIZE_BYTES`). If you raise the topic's `MaximumMessageSize` attribute (up to 1 MiB),
 > set `payloadSizeThreshold` to the same value.
 
-## Why a port
+## Designed for Kotlin
 
-The original ships two large classes (`AmazonSNSExtendedClient` for `SnsClient`,
+The Java library ships two large classes (`AmazonSNSExtendedClient` for `SnsClient`,
 `AmazonSNSExtendedAsyncClient` for `SnsAsyncClient`) that are almost entirely pass-through
 boilerplate to the wrapped SNS client, plus a configuration class inherited from
-`payload-offloading-java-common-lib-for-aws`.
+`payload-offloading-java-common-lib-for-aws`. With aws-sdk-kotlin, most of that isn't needed:
 
-| Original | Here |
+| Java library | snsoverflow |
 |---|---|
 | Separate `AmazonSNSExtendedClient`/`AmazonSNSExtendedAsyncClient`, large `AmazonSNSExtendedClientBase` of pure pass-through methods | `aws-sdk-kotlin`'s `SnsClient` is already `suspend`-based, so one `SnsExtendedClient` covers both; Kotlin interface delegation (`SnsClient by snsClient`) replaces the entire pass-through base class — only `publish`/`publishBatch`, which contain the real offload logic, are overridden |
 | `payloadoffloading-common`'s `PayloadStore`/`S3BackedPayloadStore`/`S3Dao`/`Util` | [s3overflow](https://github.com/christoph-sens/s3overflow) |
 | `SNSExtendedClientConfiguration` extends `PayloadStorageConfiguration` (S3 client, `ObjectCannedACL`, `ServerSideEncryptionStrategy`) | `SnsExtendedClientConfig` takes a `PayloadStore` directly; ACL/CSE-style config is dropped — encryption is configured on the S3 bucket itself, same simplification s3overflow and sqsoverflow already made |
 | Per-message `"S3Key"` attribute override for pinning an exact S3 key | Dropped in favor of the config-level `s3KeyPrefix`, matching [sqsoverflow](https://github.com/christoph-sens/sqsoverflow)'s `SqsExtendedClient` for a consistent configuration surface |
-| Only `publish` is offload-aware (the original predates SNS's `PublishBatch` API) | `publishBatch` is offload-aware too, offloading only the entries that need it — the same batch pattern sqsoverflow already uses for `sendMessageBatch` |
+| Only `publish` is offload-aware (the Java library predates SNS's `PublishBatch` API) | `publishBatch` is offload-aware too, offloading only the entries that need it — the same batch pattern sqsoverflow already uses for `sendMessageBatch` |
 | 6 main classes, ~2500 lines | 3 files, ~170 lines |
 
-**Note:** dropped compared to the original: client-side `ObjectCannedACL`/`ServerSideEncryptionStrategy`
+**Note:** dropped compared to the Java library: client-side `ObjectCannedACL`/`ServerSideEncryptionStrategy`
 configuration (bucket-level SSE-S3/SSE-KMS instead) and the per-message `"S3Key"` attribute
 override. Core behavior — threshold-based offloading, `alwaysThroughS3`, `s3KeyPrefix`,
 rejecting the multi-protocol JSON message structure, message-attribute validation — is preserved.
@@ -63,7 +66,10 @@ extendedClient.publish(PublishRequest { topicArn = myTopicArn; message = largePa
 `SnsExtendedClient` implements `SnsClient`, so it's a drop-in replacement wherever a plain
 `aws-sdk-kotlin` `SnsClient` is expected.
 
-## Migrating from amazon-sns-java-extended-client-lib
+## Coming from amazon-sns-java-extended-client-lib
+
+For Java services, the AWS library remains the natural choice. This section is for Kotlin services
+that use it through the Java SDK today and want to move to aws-sdk-kotlin.
 
 snsoverflow is **not wire-compatible** with the Java library: the S3 pointer format differs.
 Subscribers using the Java SQS extended client or the Java payload-offloading library cannot
@@ -163,7 +169,7 @@ Contributions are welcome — see [CONTRIBUTING](CONTRIBUTING.md). This project 
 
 This project is licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
 
-It is a Kotlin port of
+It is derived from
 [amazon-sns-java-extended-client-lib](https://github.com/awslabs/amazon-sns-java-extended-client-lib)
 (Copyright 2010-2020 Amazon.com, Inc. or its affiliates, also licensed under Apache-2.0) and
 therefore a derivative work under that license. See [NOTICE](NOTICE) for exactly which files
