@@ -4,7 +4,7 @@
 [![CI](https://github.com/christoph-sens/snsoverflow/actions/workflows/ci.yml/badge.svg)](https://github.com/christoph-sens/snsoverflow/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**An SNS extended client for Kotlin.** `SnsExtendedClient` is an [aws-sdk-kotlin](https://github.com/awslabs/aws-sdk-kotlin)
+**An SNS extended client for Kotlin.** `SnsExtendedClient(...)` returns an [aws-sdk-kotlin](https://github.com/awslabs/aws-sdk-kotlin)
 `SnsClient` that transparently offloads message bodies above a configurable size threshold to S3 and
 publishes only a small pointer: the claim-check pattern, with coroutines and without the Java SDK.
 
@@ -32,7 +32,7 @@ boilerplate to the wrapped SNS client, plus a configuration class inherited from
 
 | Java library | snsoverflow |
 |---|---|
-| Separate `AmazonSNSExtendedClient`/`AmazonSNSExtendedAsyncClient`, large `AmazonSNSExtendedClientBase` of pure pass-through methods | `aws-sdk-kotlin`'s `SnsClient` is already `suspend`-based, so one `SnsExtendedClient` covers both; Kotlin interface delegation (`SnsClient by snsClient`) replaces the entire pass-through base class — only `publish`/`publishBatch`, which contain the real offload logic, are overridden |
+| Separate `AmazonSNSExtendedClient`/`AmazonSNSExtendedAsyncClient`, large `AmazonSNSExtendedClientBase` of pure pass-through methods | `aws-sdk-kotlin`'s `SnsClient` is already `suspend`-based, so one `SnsExtendedClient` covers both; a dynamic proxy forwards every other operation to the wrapped client, so only `publish`/`publishBatch`, which contain the real offload logic, are implemented — and operations added by newer aws-sdk-kotlin versions keep working without a new release |
 | `payloadoffloading-common`'s `PayloadStore`/`S3BackedPayloadStore`/`S3Dao`/`Util` | [s3overflow](https://github.com/christoph-sens/s3overflow) |
 | `SNSExtendedClientConfiguration` extends `PayloadStorageConfiguration` (S3 client, `ObjectCannedACL`, `ServerSideEncryptionStrategy`) | `SnsExtendedClientConfig` takes a `PayloadStore` directly; ACL/CSE-style config is dropped — encryption is configured on the S3 bucket itself, same simplification s3overflow and sqsoverflow already made |
 | Per-message `"S3Key"` attribute override for pinning an exact S3 key | Dropped in favor of the config-level `s3KeyPrefix`, matching [sqsoverflow](https://github.com/christoph-sens/sqsoverflow)'s `SqsExtendedClient` for a consistent configuration surface |
@@ -73,8 +73,11 @@ val extendedClient =
 extendedClient.publish(PublishRequest { topicArn = myTopicArn; message = largePayload })
 ```
 
-`SnsExtendedClient` implements `SnsClient`, so it's a drop-in replacement wherever a plain
-`aws-sdk-kotlin` `SnsClient` is expected.
+`SnsExtendedClient(...)` returns an `SnsClient`, so it's a drop-in replacement wherever a plain
+`aws-sdk-kotlin` `SnsClient` is expected. The returned client is a dynamic proxy for the `SnsClient`
+interface on your classpath: `publish`/`publishBatch` go through the offloading logic, every other
+operation goes straight to the wrapped client. Upgrading aws-sdk-kotlin independently of snsoverflow
+is safe, including versions that add new SNS operations.
 
 ## Differences from amazon-sns-java-extended-client-lib
 
