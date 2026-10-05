@@ -30,6 +30,9 @@ import aws.sdk.kotlin.services.sns.model.PublishRequest
 import aws.sdk.kotlin.services.sns.model.PublishResponse
 import com.christophsens.s3overflow.payloadSizeInBytes
 import com.christophsens.s3overflow.storeOriginalPayload
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.util.UUID
 
 /**
@@ -39,23 +42,22 @@ import java.util.UUID
  * this client: subscribers resolve the pointer themselves (e.g. a queue subscribed with raw
  * message delivery, read via sqsoverflow's `SqsExtendedClient`, which recognizes the same
  * reserved attribute name).
+ *
+ * Payloads of a batch are uploaded concurrently. Since SNS checks the sum of all messages in a batch
+ * against the topic's `MaximumMessageSize`, [SnsExtendedClientConfig.payloadSizeThreshold] doubles as
+ * the batch limit: the largest entries are offloaded until the batch fits.
  */
 class SnsExtendedClient(
     private val snsClient: SnsClient,
     private val clientConfig: SnsExtendedClientConfig,
 ) : SnsClient by snsClient {
     override suspend fun publish(input: PublishRequest): PublishResponse {
+        checkReservedAttributes(input.messageAttributes)
         val body = input.message
         if (body.isNullOrEmpty()) return snsClient.publish(input)
-
-        require(input.messageStructure != MULTIPLE_PROTOCOL_MESSAGE_STRUCTURE) {
-            "SnsExtendedClient does not support sending JSON messages."
-        }
-
         if (!clientConfig.alwaysThroughS3 && !isLarge(body, input.messageAttributes)) return snsClient.publish(input)
 
-        checkMessageAttributes(input.messageAttributes)
-
+        checkOffloadable(input.messageStructure, input.messageAttributes)
         val pointer = storeOriginalPayload(body)
         val request =
             input.copy {
@@ -66,22 +68,40 @@ class SnsExtendedClient(
     }
 
     override suspend fun publishBatch(input: PublishBatchRequest): PublishBatchResponse {
-        val entries = input.publishBatchRequestEntries.orEmpty().map { entry -> offloadIfNeeded(entry) }
-        return snsClient.publishBatch(input.copy { publishBatchRequestEntries = entries })
+        val entries = input.publishBatchRequestEntries.orEmpty()
+        entries.forEach { entry -> checkReservedAttributes(entry.messageAttributes) }
+
+        val toOffload = entriesToOffload(entries)
+        val prepared =
+            coroutineScope {
+                entries.mapIndexed { index, entry -> async { if (index in toOffload) offload(entry) else entry } }.awaitAll()
+            }
+        return snsClient.publishBatch(input.copy { publishBatchRequestEntries = prepared })
     }
 
-    private suspend fun offloadIfNeeded(entry: PublishBatchRequestEntry): PublishBatchRequestEntry {
-        val body = entry.message
-        if (body.isNullOrEmpty()) return entry
+    /**
+     * Indices of the batch entries to offload: every entry above the threshold, plus the largest remaining
+     * entries while the sum of all messages would exceed the threshold.
+     */
+    private fun entriesToOffload(entries: List<PublishBatchRequestEntry>): Set<Int> {
+        val sizes = entries.map { messageSizeInBytes(it.message.orEmpty(), it.messageAttributes) }
+        val offloadedSizes = entries.map { attributesSizeInBytes(it.messageAttributes.orEmpty()) + OFFLOADED_BODY_ALLOWANCE_BYTES }
+        val offloadable = entries.indices.filter { !entries[it].message.isNullOrEmpty() }
+        val toOffload = offloadable.filterTo(mutableSetOf()) { clientConfig.alwaysThroughS3 || sizes[it] > clientConfig.payloadSizeThreshold }
 
-        require(entry.messageStructure != MULTIPLE_PROTOCOL_MESSAGE_STRUCTURE) {
-            "SnsExtendedClient does not support sending JSON messages."
+        var total = entries.indices.sumOf { if (it in toOffload) offloadedSizes[it] else sizes[it] }
+        val candidates = (offloadable - toOffload).filter { sizes[it] > offloadedSizes[it] }.sortedByDescending { sizes[it] }.iterator()
+        while (total > clientConfig.payloadSizeThreshold && candidates.hasNext()) {
+            val index = candidates.next()
+            toOffload += index
+            total += offloadedSizes[index] - sizes[index]
         }
+        toOffload.forEach { checkOffloadable(entries[it].messageStructure, entries[it].messageAttributes) }
+        return toOffload
+    }
 
-        if (!clientConfig.alwaysThroughS3 && !isLarge(body, entry.messageAttributes)) return entry
-
-        checkMessageAttributes(entry.messageAttributes)
-
+    private suspend fun offload(entry: PublishBatchRequestEntry): PublishBatchRequestEntry {
+        val body = entry.message.orEmpty()
         val pointer = storeOriginalPayload(body)
         return entry.copy {
             messageAttributes = withSizeAttribute(entry.messageAttributes, payloadSizeInBytes(body))
@@ -98,7 +118,17 @@ class SnsExtendedClient(
         }
     }
 
-    private fun checkMessageAttributes(attributes: Map<String, MessageAttributeValue>?) {
+    private fun checkReservedAttributes(attributes: Map<String, MessageAttributeValue>?) {
+        val attrs = attributes.orEmpty()
+        RESERVED_ATTRIBUTE_NAMES.forEach { name ->
+            require(name !in attrs) { "Message attribute name $name is reserved for use by SnsExtendedClient." }
+        }
+    }
+
+    private fun checkOffloadable(messageStructure: String?, attributes: Map<String, MessageAttributeValue>?) {
+        require(messageStructure != MULTIPLE_PROTOCOL_MESSAGE_STRUCTURE) {
+            "SnsExtendedClient cannot offload messages with the multi-protocol JSON message structure."
+        }
         val attrs = attributes.orEmpty()
         val size = attributesSizeInBytes(attrs)
         require(size <= clientConfig.payloadSizeThreshold) {
@@ -110,13 +140,13 @@ class SnsExtendedClient(
             "Number of message attributes [${attrs.size}] exceeds the maximum allowed for large-payload " +
                 "messages [$MAX_ALLOWED_ATTRIBUTES]."
         }
-        require(RESERVED_ATTRIBUTE_NAME !in attrs) {
-            "Message attribute name $RESERVED_ATTRIBUTE_NAME is reserved for use by SnsExtendedClient."
-        }
     }
 
     private fun isLarge(body: String, attributes: Map<String, MessageAttributeValue>?): Boolean =
-        attributesSizeInBytes(attributes.orEmpty()) + payloadSizeInBytes(body) > clientConfig.payloadSizeThreshold
+        messageSizeInBytes(body, attributes) > clientConfig.payloadSizeThreshold
+
+    private fun messageSizeInBytes(body: String, attributes: Map<String, MessageAttributeValue>?): Long =
+        attributesSizeInBytes(attributes.orEmpty()) + payloadSizeInBytes(body)
 
     private fun attributesSizeInBytes(attributes: Map<String, MessageAttributeValue>): Long =
         attributes.entries.sumOf { (key, value) ->

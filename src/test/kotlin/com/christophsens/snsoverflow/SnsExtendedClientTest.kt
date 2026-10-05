@@ -8,9 +8,12 @@ import aws.sdk.kotlin.services.sns.model.PublishBatchResponse
 import aws.sdk.kotlin.services.sns.model.PublishRequest
 import aws.sdk.kotlin.services.sns.model.PublishResponse
 import com.christophsens.s3overflow.PayloadStore
+import com.christophsens.s3overflow.SNS_DEFAULT_MAX_MESSAGE_SIZE_BYTES
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -170,5 +173,80 @@ class SnsExtendedClientTest {
                     },
                 )
             }
+        }
+
+    @Test
+    fun `publishes a small multi-protocol json message unchanged`() =
+        runTest {
+            coEvery { snsClient.publish(any<PublishRequest>()) } returns PublishResponse {}
+            val json = """{"default":"hi"}"""
+
+            client.publish(PublishRequest { topicArn = TOPIC_ARN; message = json; messageStructure = "json" })
+
+            coVerify { snsClient.publish(withArg<PublishRequest> { assertThat(it.message).isEqualTo(json) }) }
+        }
+
+    @Test
+    fun `rejects a small message that uses a reserved attribute name`() {
+        listOf(RESERVED_ATTRIBUTE_NAME, LEGACY_RESERVED_ATTRIBUTE_NAME).forEach { name ->
+            val request =
+                PublishRequest {
+                    topicArn = TOPIC_ARN
+                    message = "tiny"
+                    messageAttributes = mapOf(name to MessageAttributeValue { dataType = "Number"; stringValue = "1" })
+                }
+
+            assertThatThrownBy { runTest { client.publish(request) } }
+                .describedAs(name)
+                .isInstanceOf(IllegalArgumentException::class.java)
+        }
+    }
+
+    @Test
+    fun `offloads the largest entries until the whole batch fits into the threshold`() =
+        runTest {
+            val topicLimitClient = SnsExtendedClient(snsClient, SnsExtendedClientConfig(payloadStore))
+            coEvery { payloadStore.storeOriginalPayload(any(), any()) } returns "pointer-json"
+            coEvery { snsClient.publishBatch(any<PublishBatchRequest>()) } returns
+                PublishBatchResponse { failed = emptyList(); successful = emptyList() }
+            val entrySizes = mapOf("small" to 60_000, "large" to 120_000, "medium" to 100_000)
+            check(entrySizes.values.sum() > SNS_DEFAULT_MAX_MESSAGE_SIZE_BYTES)
+
+            topicLimitClient.publishBatch(
+                PublishBatchRequest {
+                    topicArn = TOPIC_ARN
+                    publishBatchRequestEntries = entrySizes.map { (name, size) -> PublishBatchRequestEntry { id = name; message = "x".repeat(size) } }
+                },
+            )
+
+            coVerify {
+                snsClient.publishBatch(
+                    withArg<PublishBatchRequest> { batch ->
+                        val offloaded = batch.publishBatchRequestEntries.orEmpty().filter { it.message == "pointer-json" }.map { it.id }
+                        assertThat(offloaded).containsExactly("large")
+                    },
+                )
+            }
+        }
+
+    @Test
+    fun `uploads the payloads of a batch concurrently`() =
+        runTest {
+            coEvery { payloadStore.storeOriginalPayload(any(), any()) } coAnswers {
+                delay(1_000)
+                "pointer-json"
+            }
+            coEvery { snsClient.publishBatch(any<PublishBatchRequest>()) } returns
+                PublishBatchResponse { failed = emptyList(); successful = emptyList() }
+
+            client.publishBatch(
+                PublishBatchRequest {
+                    topicArn = TOPIC_ARN
+                    publishBatchRequestEntries =
+                        listOf("a", "b", "c").map { id -> PublishBatchRequestEntry { this.id = id; message = "this message is definitely too large" } }
+                },
+            )
+
+            assertThat(currentTime).isEqualTo(1_000)
         }
 }

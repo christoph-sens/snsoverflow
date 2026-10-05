@@ -42,11 +42,21 @@ boilerplate to the wrapped SNS client, plus a configuration class inherited from
 **Note:** dropped compared to the Java library: client-side `ObjectCannedACL`/`ServerSideEncryptionStrategy`
 configuration (bucket-level SSE-S3/SSE-KMS instead) and the per-message `"S3Key"` attribute
 override. Core behavior — threshold-based offloading, `alwaysThroughS3`, `s3KeyPrefix`,
-rejecting the multi-protocol JSON message structure, message-attribute validation — is preserved.
+message-attribute validation — is preserved. Messages with the multi-protocol JSON message structure
+are rejected only if they would have to be offloaded; small ones are published unchanged.
 Unlike SQS, SNS is fire-and-forget: there's no receipt handle, so no receive/delete/cleanup side
 to this client. A subscriber resolves the pointer itself — for an SNS topic fanning out to an SQS
 queue with raw message delivery enabled, that's [sqsoverflow](https://github.com/christoph-sens/sqsoverflow)'s
 `SqsExtendedClient`, which recognizes the same reserved attribute name.
+
+**Batches:** payloads of a `publishBatch` are uploaded concurrently. SNS checks the sum of all messages
+in a batch against the topic's `MaximumMessageSize`, so `payloadSizeThreshold` (which should match that
+attribute) is also used as the batch limit: the largest entries are offloaded until the batch fits.
+
+**Fan-out:** every subscribed queue receives the same pointer and therefore reads the same S3 object.
+Subscribers must not delete it when they delete their message: set `cleanupS3Payload = false` in
+their sqsoverflow clients and expire payloads with a bucket lifecycle rule (see
+[s3overflow](https://github.com/christoph-sens/s3overflow#operating-the-payload-bucket)).
 
 ## Usage
 
