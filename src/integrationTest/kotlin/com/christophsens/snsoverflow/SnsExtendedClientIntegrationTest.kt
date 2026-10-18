@@ -74,7 +74,7 @@ class SnsExtendedClientIntegrationTest {
     private lateinit var testTopicArn: String
     private lateinit var testQueueUrl: String
     private lateinit var testBucketName: String
-    private lateinit var extendedClient: SnsExtendedClient
+    private lateinit var extendedClient: SnsClient
 
     @BeforeEach
     fun setUp() =
