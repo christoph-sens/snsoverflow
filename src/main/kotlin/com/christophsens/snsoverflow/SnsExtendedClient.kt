@@ -36,7 +36,7 @@ import kotlinx.coroutines.coroutineScope
 import java.util.UUID
 
 /**
- * Wraps an aws-sdk-kotlin [SnsClient] and transparently offloads message bodies that exceed
+ * Returns an [SnsClient] that wraps [snsClient] and transparently offloads message bodies that exceed
  * [SnsExtendedClientConfig.payloadSizeThreshold] to the configured payload store, publishing only
  * a pointer through SNS. Unlike SQS, SNS is fire-and-forget, so there is no receive/delete side to
  * this client: subscribers resolve the pointer themselves (e.g. a queue subscribed with raw
@@ -46,8 +46,25 @@ import java.util.UUID
  * Payloads of a batch are uploaded concurrently. Since SNS checks the sum of all messages in a batch
  * against the topic's `MaximumMessageSize`, [SnsExtendedClientConfig.payloadSizeThreshold] doubles as
  * the batch limit: the largest entries are offloaded until the batch fits.
+ *
+ * The returned client is a dynamic proxy for the [SnsClient] interface of the aws-sdk-kotlin version on
+ * the runtime classpath: `publish` and `publishBatch` go through the offloading logic, every other
+ * operation goes straight to [snsClient]. Operations added by a newer aws-sdk-kotlin therefore work
+ * without a new snsoverflow release.
  */
-class SnsExtendedClient(
+fun SnsExtendedClient(
+    snsClient: SnsClient,
+    clientConfig: SnsExtendedClientConfig,
+): SnsClient = offloadingProxy(OffloadingSnsClient(snsClient, clientConfig), snsClient, OFFLOADED_OPERATIONS)
+
+/** Operations that [OffloadingSnsClient] overrides; all others are forwarded to the wrapped client by the proxy. */
+internal val OFFLOADED_OPERATIONS = setOf("publish", "publishBatch")
+
+/**
+ * The offloading logic behind [SnsExtendedClient]. Only reached through the proxy, and only for
+ * [OFFLOADED_OPERATIONS]: its delegated members are compiled against one aws-sdk-kotlin version.
+ */
+internal class OffloadingSnsClient(
     private val snsClient: SnsClient,
     private val clientConfig: SnsExtendedClientConfig,
 ) : SnsClient by snsClient {
